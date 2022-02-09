@@ -1,12 +1,13 @@
 <?php
 /*
-Plugin Name: OSS Aliyun
-Plugin URI: https://github.com/sy-records/aliyun-oss-wordpress
-Description: 使用阿里云对象存储 OSS 作为附件存储空间。（This is a plugin that uses Aliyun Object Storage Service for attachments remote saving.）
-Version: 1.2.8
-Author: 沈唁
-Author URI: https://qq52o.me
+Plugin Name: OSS Aliyun(Only Image)
+Plugin URI: https://github.com/shdwu/aliyun-oss-wordpress
+Description: 在原有的OSS Aliyun插件里加入文件过滤 支持只上传图片（This is a plugin that uses Aliyun Object Storage Service for attachments remote saving.）
+Version: 1.28
+Author: shdwu
+Author URI:
 License: Apache 2.0
+Forked: https://github.com/sy-records/aliyun-oss-wordpress
 */
 
 require_once 'sdk/vendor/autoload.php';
@@ -37,6 +38,7 @@ function oss_set_options()
         'upload_url_path' => '', // URL前缀
         'style' => '', // 图片处理
         'update_file_name' => 'false', // 是否重命名文件名
+        'exclude_filter' => '', // 过滤器
     );
     add_option('oss_options', $options, '', 'yes');
 }
@@ -169,6 +171,10 @@ function oss_delete_oss_files(array $files)
  */
 function oss_upload_attachments($metadata)
 {
+    $oss_options = get_option('oss_options');
+    if (do_file_filter($oss_options['exclude_filter'], $metadata['file'])) {
+        return;
+    }
     $mime_types = get_allowed_mime_types();
     $image_mime_types = array(
         $mime_types['jpg|jpeg|jpe'],
@@ -209,11 +215,14 @@ if (substr_count($_SERVER['REQUEST_URI'], '/update.php') <= 0) {
  */
 function oss_upload_thumbs($metadata)
 {
+    //获取oss插件的配置信息
+    $oss_options = get_option('oss_options', true);
+    if (do_file_filter($oss_options['exclude_filter'], $metadata['file'])) {
+        return;
+    }
     //获取上传路径
     $wp_uploads = wp_upload_dir();
     $basedir = $wp_uploads['basedir'];
-    //获取oss插件的配置信息
-    $oss_options = get_option('oss_options', true);
     if (isset($metadata['file'])) {
         // Maybe there is a problem with the old version
         $file = $basedir . '/' . $metadata['file'];
@@ -264,6 +273,20 @@ function oss_upload_thumbs($metadata)
 //避免上传插件/主题时出现同步到oss的情况
 if (substr_count($_SERVER['REQUEST_URI'], '/update.php') <= 0) {
     add_filter('wp_generate_attachment_metadata', 'oss_upload_thumbs', 100);
+}
+
+/**
+ * 过滤不需要上传的文件 不上传返回true
+ */
+function do_file_filter($exclude_filter, $filename) {
+    // echo '<div class="updated"><p><strong>' . $exclude_filter . ':' . $filename .'</strong></p></div>';
+    if ($exclude_filter) {
+        if (preg_match($exclude_filter, $filename)) {
+            // echo '<div class="updated"><p><strong>Not Upload</strong></p></div>';
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -326,6 +349,11 @@ add_action('delete_attachment', 'oss_delete_remote_attachment');
 // 当upload_path为根目录时，需要移除URL中出现的“绝对路径”
 function oss_modefiy_img_url($url, $post_id)
 {
+    $oss_options = get_option('oss_options');
+    preg_match('/[^/\\&\?]+\.\w{3,4}(?=([\?&].*$|$))/g', $url, $matches);
+    if ( count($matches) != 0 && do_file_filter($oss_options['exclude_filter'], $matches[0])) {
+        return $url;
+    }
     // 移除 ./ 和 项目根路径
     $url = str_replace(array('./', get_home_path()), array('', ''), $url);
     return $url;
@@ -475,12 +503,17 @@ function oss_setting_page()
         $options['upload_url_path'] = isset($_POST['upload_url_path']) ? sanitize_text_field(stripslashes($_POST['upload_url_path'])) : '';
         $options['style'] = isset($_POST['style']) ? sanitize_text_field($_POST['style']) : '';
         $options['update_file_name'] = isset($_POST['update_file_name']) ? sanitize_text_field($_POST['update_file_name']) : 'false';
+        $options['exclude_filter'] = isset($_POST['exclude_filter']) ? sanitize_text_field($_POST['exclude_filter']) : '';
     }
 
     if (!empty($_POST) and $_POST['type'] == 'aliyun_oss_all') {
         $sync = oss_read_dir_queue(get_home_path() . get_option('upload_path'));
+        $exclude_filter = $options['exclude_filter'];
         foreach ($sync as $k) {
-            oss_file_upload($k['key'], $k['filepath']);
+            $oss_options = get_option('oss_options');
+            if (!do_file_filter($oss_options['exclude_filter'], $k['filepath'])) {
+                oss_file_upload($k['key'], $k['filepath']);
+            }
         }
         echo '<div class="updated"><p><strong>本次操作成功同步' . count($sync) . '个文件</strong></p></div>';
     }
@@ -522,6 +555,7 @@ function oss_setting_page()
     $oss_bucket = esc_attr($oss_options['bucket']);
     $oss_regional = esc_attr($oss_options['regional']);
     $oss_accessKeyId = esc_attr($oss_options['accessKeyId']);
+    $exclude_filter = esc_attr($oss_options['exclude_filter']);
     $oss_accessKeySecret = esc_attr($oss_options['accessKeySecret']);
 
     $oss_is_internal = esc_attr($oss_options['is_internal']);
@@ -598,6 +632,12 @@ function oss_setting_page()
                     <td>
                         <input type="text" name="accessKeySecret" value="<?php echo $oss_accessKeySecret; ?>" size="50" placeholder="AccessKeySecret"/>
                     </td>
+                </tr>
+                <tr>
+                    <th>
+                        <legend>排除规则(满足规则的不上传)</legend>
+                    </th>
+                    <td><input type="text" name="exclude_filter" value="<?php echo $exclude_filter; ?>" size="50" placeholder="排除规则"/></td>
                 </tr>
                 <tr>
                     <th>
